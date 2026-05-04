@@ -27,6 +27,8 @@ from .exchanges import StarStar_to_BHstar, BHstar_to_BBH
 from .tidal_disruptions import BH_TidalDisruptions
 from .compact_accretion import *
 from .remnant import configure_kick_model
+from .cosmo_coupling import apply_cosmological_coupling
+from .primordial_binaries import extract_primordial_binaries
 
 
 def initialize_cluster(config):
@@ -273,6 +275,12 @@ def initialize_cluster(config):
     gBH = np.ones(mBH.size)
     hBH = np.zeros(mBH.size)
 
+    # pre-compute initial BH quantities needed for primordial binaries and cosmo coupling:
+    mBH_avg_ini = np.mean(mBH) if mBH.size > 0 else 0.0
+    vBH_ini = np.sqrt(0.4 * G_Newton * mBH_avg_ini * mBH.size / rh) if mBH.size > 0 else 0.0
+    z_i_0 = redshift_interp(lookback_interp(zCl_form) - tBH_form)
+    z_i = z_i_0
+
     # data arrays:
     binaries = np.zeros(shape=(1, 15))
     pairs = np.zeros(shape=(1, 5))
@@ -310,6 +318,9 @@ def initialize_cluster(config):
         't': 0, 'z': zCl_form, 'dt': dt_min, 'zCl_form': zCl_form, 'seed': seed,
         # aux:
         'i_aux1': 0,
+        # cosmological coupling and primordial binaries:
+        'z_i': z_i, 'z_i_0': z_i_0,
+        'mBH_avg_ini': mBH_avg_ini, 'vBH_ini': vBH_ini,
         # tracking lists:
         'simulation_times': [], 'black_hole_masses': [], 'black_hole_spins': [], 'black_hole_generations': [], 'black_hole_tdes': []
     }
@@ -337,6 +348,8 @@ def compute_cluster_properties(state, config):
     # unpack current state into local variables:
     t = state['t']
     mBH = state['mBH']
+    sBH = state['sBH']
+    gBH = state['gBH']
     binaries = state['binaries']
     pairs = state['pairs']
     i_aux1 = state['i_aux1']
@@ -361,8 +374,32 @@ def compute_cluster_properties(state, config):
 
     # activate BH subsystem once BH formation time is reached:
     if t>tBH_form and i_aux1==0:
-        N_BH = mBH.size
+        # extract primordial binaries (once, at BH formation time):
+        pbf = config.get('pbf', 0.0)
+        if pbf > 0.0:
+            mBH, sBH, gBH, binaries, n_prim = extract_primordial_binaries(
+                mBH, sBH, gBH, binaries, pbf,
+                R_sun, G_Newton,
+                state['mBH_avg_ini'], state['vBH_ini'],
+                tBH_form, state['z_i_0']
+            )
+            N_BBH = binaries.shape[0] - 1
+            state['binaries'] = binaries
+            state['mBH'] = mBH; state['sBH'] = sBH; state['gBH'] = gBH
+            state['N_BBH'] = N_BBH
+        N_BH = mBH.size + 2 * (binaries.shape[0] - 1)
         i_aux1 = 1
+
+    # apply cosmological coupling every timestep after BH formation:
+    if t > tBH_form and config.get('k_cosmo', 0.0) != 0.0:
+        hBH = state['hBH']
+        binaries, mBH, sBH, pairs, z_i = apply_cosmological_coupling(
+            t, tBH_form, state['z'], state['z_i'], state['z_i_0'],
+            config['k_cosmo'], binaries, mBH, sBH, pairs
+        )
+        state['z_i'] = z_i
+        state['binaries'] = binaries
+        state['mBH'] = mBH; state['sBH'] = sBH; state['pairs'] = pairs
 
     # check if BH subsystem has fully evaporated:
     if i_aux1==1 and N_BH<=0:
