@@ -37,8 +37,49 @@ a_BH_vec = loaded_data_xMB['a_BH_vec']
 iota_vec = loaded_data_xMB['iota_vec']
 
 # interpolate redshift-lookback and lookback-redshift relations:
-lookback_interp = interpolate.interp1d(Planck18_lookup_table['z'], Planck18_lookup_table['lookback'])
-redshift_interp = interpolate.interp1d(Planck18_lookup_table['t'], Planck18_lookup_table['redshift'])
+# Build the interpolators once over the Planck18 lookup table; the public
+# wrappers below add a domain check so out-of-range inputs raise a clear error
+# instead of silently extrapolating.
+_lookback_interp = interpolate.interp1d(Planck18_lookup_table['z'], Planck18_lookup_table['lookback'])
+_redshift_interp = interpolate.interp1d(Planck18_lookup_table['t'], Planck18_lookup_table['redshift'])
+
+# tabulated domains (set by the Planck18 lookup table):
+_Z_MIN, _Z_MAX = float(Planck18_lookup_table['z'].min()), float(Planck18_lookup_table['z'].max())
+_T_MIN, _T_MAX = float(Planck18_lookup_table['t'].min()), float(Planck18_lookup_table['t'].max())
+
+
+def lookback_interp(z):
+    """
+    Lookback time [Myr] at redshift z, via interpolation over the Planck18
+    lookup table (fast replacement for lookback()).
+
+    @in z: redshift (scalar or array)
+
+    @out: lookback time [Myr]
+    """
+    if np.any(np.asarray(z) < _Z_MIN) or np.any(np.asarray(z) > _Z_MAX):
+        raise ValueError(
+            f"lookback_interp: redshift z={z} is outside the Planck18 lookup "
+            f"table range z in [{_Z_MIN}, {_Z_MAX}]."
+        )
+    return _lookback_interp(z)
+
+
+def redshift_interp(t):
+    """
+    Redshift at lookback time t [Myr], via interpolation over the Planck18
+    lookup table (fast replacement for redshift()).
+
+    @in t: lookback time [Myr] (scalar or array)
+
+    @out: redshift
+    """
+    if np.any(np.asarray(t) < _T_MIN) or np.any(np.asarray(t) > _T_MAX):
+        raise ValueError(
+            f"redshift_interp: lookback time t={t} Myr is outside the Planck18 "
+            f"lookup table range t in [{_T_MIN}, {_T_MAX}] Myr."
+        )
+    return _redshift_interp(t)
 
 # interpolate auxiliary function:
 x_mb_interp = CloughTocher2DInterpolator(np.c_[a_BH_vec, iota_vec], x_mb_vec)
@@ -305,7 +346,12 @@ def find_eMAX(m0, m1, m2, a1, a2, e1, e2, cosi1, cosi2, w, x0=1e-10, tol=1e-10):
     """
  
     x_min = root(fun=DW, x0=x0, args=(m0, m1, m2, a1, a2, e1, e2, cosi1, cosi2, w), tol=tol)['x'][0]
-    
+
+    # physically motivated floor: pericenter must exceed 4*GM/c^2 (a few Schwarzschild radii),
+    # giving a minimum value of x_min = epsilon_min = 8*G*(m0+m1)/(c^2*a1):
+    x_min_floor = 8 * G_Newton * (m0 + m1) / c_light**2 / a1
+    x_min = np.clip(x_min, x_min_floor, 1.0)
+
     eMAX = np.sqrt(1 - x_min)
     
     return eMAX
