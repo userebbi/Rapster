@@ -2,40 +2,71 @@
 Reads all per-simulation output files in output_grid/ and writes a summary file.
 
 Usage:
-    python3 make_summary.py --outdir /path/to/outdir [--k 0]
+    python3 make_summary.py --outdir /path/to/outdir
+
+Column indices are derived BY NAME from rapster.constants, so this script stays
+correct across Rapster versions even if the column order/count changes.
+
+The cosmological coupling k is read PER RUN from the directory tag
+(e.g. "k-3.0_Z..._Mcl..._r..._R..._zf..."), so a single grid may mix k values.
+Old-format tags without a leading "k..." field are still supported (k = NaN).
 """
 import argparse
 import os
 import numpy as np
 
-# --- column indices in evolution.txt (0-based, after stripping the # header) ---
-# # seed t z dt m_avg Mcl rh R_gal v_gal t_rh t_rhBH n_star N_BH mBH_avg mBH_max ...
-COL_T        = 1
-COL_Z        = 2
-COL_MAVG     = 4
-COL_MCL      = 5
-COL_RH       = 6
-COL_RGAL     = 7
-COL_NBH      = 13
-COL_MBHAVG   = 14
-COL_MBHMAX   = 15
-COL_NME      = 26
-COL_NBBH     = 27
-COL_N3BB     = 35
-COL_N2CAP    = 36
-COL_NEXCH    = 40  # N_ex (BBH-BH exchanges)
-COL_NTRIPLES = 58
-COL_NZLK     = 59
-COL_NTDEBHWD = 63
-COL_NTDESTAR = 68
+from rapster.constants import evolution_keys, merger_keys
 
-# --- column indices in mergers.txt (0-based) ---
-# # seed ind channel a e m1 m2 chi1 chi2 g1 g2 ... Mcl0 rh0 Z zClForm Rgal0 Mcl rh Rgal
-COL_M_CHANNEL = 2
-COL_M_M1      = 5
-COL_M_M2      = 6
-COL_M_MREM    = 18
-COL_M_ZMERGE  = 17
+# --- evolution.txt column indices, resolved by name (robust to format changes) ---
+_EVO = {name: i for i, name in enumerate(evolution_keys)}
+N_EVO_COLS = len(evolution_keys)
+
+COL_T        = _EVO['t']
+COL_Z        = _EVO['z']
+COL_MAVG     = _EVO['m_avg']
+COL_MCL      = _EVO['M_cl']
+COL_RH       = _EVO['r_h']
+COL_RGAL     = _EVO['R_gal']
+COL_NBH      = _EVO['N_BH']
+COL_MBHAVG   = _EVO['mBH_avg']
+COL_MBHMAX   = _EVO['mBH_max']
+COL_NME      = _EVO['N_me']
+COL_NBBH     = _EVO['N_BBH']
+COL_N3BB     = _EVO['N_3bb']
+COL_N2CAP    = _EVO['N_2cap']
+COL_NEXCH    = _EVO['N_ex']
+COL_NTRIPLES = _EVO['N_triples']
+COL_NZLK     = _EVO['N_ZLK']
+COL_NTDEBHWD = _EVO['N_tdeBHWD']
+COL_NTDESTAR = _EVO['N_tdeBHstar']
+
+# --- mergers.txt column indices, resolved by name ---
+_MER = {name: i for i, name in enumerate(merger_keys)}
+
+COL_M_CHANNEL = _MER['channel']
+COL_M_M1      = _MER['m1']
+COL_M_M2      = _MER['m2']
+COL_M_MREM    = _MER['mRem']
+COL_M_ZMERGE  = _MER['z']
+
+
+def parse_tag(sim):
+    """Parse a run directory name into (k, Z, Mcl, r, R, z_form).
+
+    New format:  k-3.0_Z1.00e-03_Mcl5.00e+05_r1.234_R8000.0_zf3.456
+    Old format:  Z1.00e-03_Mcl5.00e+05_r1.234_R8000.0_zf3.456   (k -> NaN)
+    """
+    k_grid = float('nan')
+    parts = sim.split('_')
+    if parts and parts[0].startswith('k'):
+        k_grid = float(parts[0][1:])
+        parts = parts[1:]
+    Z_grid   = float(parts[0][1:])
+    Mcl_grid = float(parts[1][3:])
+    r_grid   = float(parts[2][1:])
+    R_grid   = float(parts[3][1:])
+    zf_grid  = float(parts[4][2:])
+    return k_grid, Z_grid, Mcl_grid, r_grid, R_grid, zf_grid
 
 
 def parse_log(log_path):
@@ -103,7 +134,6 @@ def merger_stats(filepath):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--outdir', type=str, default='.')
-    parser.add_argument('--k',     type=float, default=0.0, help='cosmological coupling index used')
     args = parser.parse_args()
 
     grid_dir = os.path.join(args.outdir, 'output_grid')
@@ -131,17 +161,12 @@ def main():
         sim_id += 1
         sim_dir = os.path.join(grid_dir, sim)
 
-        # parse grid parameters from tag
-        # format: Z{Z}_Mcl{Mcl}_r{r}_R{R}_zf{zf}
+        # parse grid parameters (including k) from the directory tag
         try:
-            parts = sim.split('_')
-            Z_grid    = float(parts[0][1:])
-            Mcl_grid  = float(parts[1][3:])
-            r_grid    = float(parts[2][1:])
-            R_grid    = float(parts[3][1:])
-            zf_grid   = float(parts[4][2:])
+            k_grid, Z_grid, Mcl_grid, r_grid, R_grid, zf_grid = parse_tag(sim)
         except Exception:
             print(f"Could not parse tag: {sim}, skipping.")
+            sim_id -= 1
             continue
 
         log_path = os.path.join(sim_dir, 'log.txt')
@@ -153,7 +178,7 @@ def main():
 
         evo = last_row(evo_file) if os.path.exists(evo_file) else None
 
-        if evo is not None and len(evo) > COL_NTDESTAR:
+        if evo is not None and len(evo) >= N_EVO_COLS:
             t_final    = evo[COL_T]
             z_final    = evo[COL_Z]
             Mcl_fin    = evo[COL_MCL]
@@ -190,7 +215,7 @@ def main():
         N_ch6 = mstats.get('N_channel_6', 0)
 
         row = (
-            f"{sim_id} {args.k:.4f} {Z_grid:.6e} {Mcl_grid:.6e} {r_grid:.6e} {R_grid:.6e} {zf_grid:.6f} "
+            f"{sim_id} {k_grid:+.4f} {Z_grid:.6e} {Mcl_grid:.6e} {r_grid:.6e} {R_grid:.6e} {zf_grid:.6f} "
             f"{exit_reason} "
             f"{t_final:.4f} {z_final:.6f} "
             f"{Mcl_fin:.4e} {rh_fin:.4f} {Rgal_fin:.4e} {mavg_fin:.4f} "
