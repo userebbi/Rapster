@@ -97,7 +97,7 @@ t_sev = 2.0
 tBH_form = 3.5
 
 # Maximum fraction of cluster's mass locked in BHs:
-fBH_max = 0.20
+fBH_max = 0.99
 
 # Stellar evolution parameter:
 nu_sev = 0.07
