@@ -16,6 +16,11 @@ import os
 import numpy as np
 
 from rapster.constants import evolution_keys, merger_keys
+from rapster.functions import lookback_interp
+
+# Age of the universe (Myr) in the Planck18 cosmology used by Rapster.
+# = lookback time at the highest tabulated redshift.
+AGE_UNIVERSE = 13770.444840721311
 
 # --- evolution.txt column indices, resolved by name (robust to format changes) ---
 _EVO = {name: i for i, name in enumerate(evolution_keys)}
@@ -97,6 +102,63 @@ def last_row(filepath):
     return np.array(last.split(), dtype=float)
 
 
+def scan_evolution(filepath):
+    """Scan ALL rows of an evolution file to get:
+      - n_rows: number of data rows (0 => stillborn, no timestep completed)
+      - f_BH_max: peak of (N_BH * mBH_avg)/M_cl over the whole history
+    f_BH here is the TOTAL BH mass fraction (all BHs, incl. those in binaries),
+    since mBH_avg averages over singles + binaries + pairs.
+    """
+    n_rows = 0
+    f_bh_max = 0.0
+    if not os.path.exists(filepath):
+        return n_rows, float('nan')
+    with open(filepath) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            cols = line.split()
+            try:
+                Mcl = float(cols[COL_MCL])
+                nbh = float(cols[COL_NBH])
+                mbh = float(cols[COL_MBHAVG])
+            except Exception:
+                continue
+            n_rows += 1
+            if Mcl > 0:
+                f = nbh * mbh / Mcl
+                if f > f_bh_max:
+                    f_bh_max = f
+    if n_rows == 0:
+        return 0, float('nan')
+    return n_rows, f_bh_max
+
+
+def classify_exit(exit_reason, z_final, f_bh_final, n_rows):
+    """Return a clean physical category.
+    STILLBORN     : no timestep recorded (evolution empty)
+    SURVIVED      : reached z=0 today
+    BH_DOMINATED  : ran out via fBH_max (END_OF_SIMULATION, not at z=0)
+    DISSOLVED / GALAXY_CENTER / EVAPORATED : dynamical death
+    """
+    if n_rows == 0:
+        return 'STILLBORN'
+    if exit_reason == 'REDSHIFT_0_REACHED':
+        return 'SURVIVED'
+    if exit_reason == 'CLUSTER_DISSOLVED':
+        return 'DISSOLVED'
+    if exit_reason == 'CLUSTER_REACHED_GALAXY_CENTER':
+        return 'GALAXY_CENTER'
+    if exit_reason == 'BH_SUBSYSTEM_EVAPORATED':
+        return 'EVAPORATED'
+    if exit_reason == 'END_OF_SIMULATION':
+        # in this grid t_max is never reached (z=0 always comes first),
+        # so a no-physical-reason exit means the fBH_max ceiling was hit.
+        return 'BH_DOMINATED'
+    return 'UNKNOWN'
+
+
 def merger_stats(filepath):
     """Return number of mergers per channel and max remnant mass."""
     if not os.path.exists(filepath):
@@ -145,8 +207,9 @@ def main():
 
     header = (
         "# ID k_cosmo Z_grid Mcl_grid r_grid R_grid z_form_grid "
-        "exit_reason "
-        "t_final z_final "
+        "exit_reason exit_class "
+        "t_final z_final t_life t_death_abs "
+        "f_BH_final f_BH_max "
         "Mcl_final rh_final Rgal_final m_avg_final "
         "N_BH_final mBH_avg_final mBH_max_final "
         "N_me N_BBH N_3bb N_2cap N_ex N_triples N_ZLK N_tdeBHWD N_tdeBHstar "
@@ -203,6 +266,35 @@ def main():
             N_me = N_BBH = N_3bb = N_2cap = N_ex = N_tri = N_ZLK = float('nan')
             N_tdeWD = N_tdestar = float('nan')
 
+        # --- scan whole evolution for peak f_BH and row count (stillborn check) ---
+        n_rows, f_bh_max = scan_evolution(evo_file) if os.path.exists(evo_file) else (0, float('nan'))
+
+        # f_BH at the last recorded step (total BH mass fraction)
+        if (evo is not None and len(evo) >= N_EVO_COLS
+                and not np.isnan(Mcl_fin) and Mcl_fin > 0):
+            f_bh_final = N_BH_fin * mBHavg_fin / Mcl_fin
+        else:
+            f_bh_final = float('nan')
+
+        # clean physical class
+        exit_class = classify_exit(exit_reason, z_final, f_bh_final, n_rows)
+
+        # life duration and absolute cosmic death time
+        if n_rows == 0:
+            # stillborn: died at formation -> zero lifetime, dies at z_form
+            t_life = 0.0
+            z_death = zf_grid
+        else:
+            t_life = t_final if not np.isnan(t_final) else float('nan')
+            z_death = z_final
+
+        # absolute time from Big Bang: t_form_abs + lifetime
+        try:
+            t_form_abs = AGE_UNIVERSE - lookback_interp(zf_grid)
+            t_death_abs = t_form_abs + (t_life if not np.isnan(t_life) else 0.0)
+        except Exception:
+            t_death_abs = float('nan')
+
         mstats = merger_stats(mer_file)
         mrem_max    = mstats.get('mrem_max', float('nan'))
         z_merge_min = mstats.get('z_merge_min', float('nan'))
@@ -216,8 +308,9 @@ def main():
 
         row = (
             f"{sim_id} {k_grid:+.4f} {Z_grid:.6e} {Mcl_grid:.6e} {r_grid:.6e} {R_grid:.6e} {zf_grid:.6f} "
-            f"{exit_reason} "
-            f"{t_final:.4f} {z_final:.6f} "
+            f"{exit_reason} {exit_class} "
+            f"{t_final:.4f} {z_final:.6f} {t_life:.4f} {t_death_abs:.4f} "
+            f"{f_bh_final:.4f} {f_bh_max:.4f} "
             f"{Mcl_fin:.4e} {rh_fin:.4f} {Rgal_fin:.4e} {mavg_fin:.4f} "
             f"{N_BH_fin:.0f} {mBHavg_fin:.4f} {mBHmax_fin:.4f} "
             f"{N_me:.0f} {N_BBH:.0f} {N_3bb:.0f} {N_2cap:.0f} {N_ex:.0f} {N_tri:.0f} {N_ZLK:.0f} {N_tdeWD:.0f} {N_tdestar:.0f} "

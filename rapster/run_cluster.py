@@ -247,6 +247,21 @@ def main():
         # print runtime information:
         print_status(state, config, local_time_initial, simulation_time_initial)
 
+
+
+    if state['t'] >= config['t_max']:
+        print('EXIT: t_max reached')
+    elif state['R_gal'] <= 0:
+        print('EXIT: R_gal <= 0')
+    elif state['Mcl'] <= 0:
+        print('EXIT: Mcl <= 0')
+    elif state['mBH'].sum() >= fBH_max * state['Mcl']:
+        f_single = state['mBH'].sum() / state['Mcl']
+        f_total  = state['N_BH'] * state['mBH_avg'] / state['Mcl']
+        print(f'EXIT: fBH_max reached  f_single={f_single:.4f}  f_total={f_total:.4f}')
+    else:
+        print('EXIT: via internal break (compute/update returned False)')    
+    
     write_output(state, config)
 
     print('END OF SIMULATION. RUNTIME:', "{:.3g}".format(np.abs(time.time() - simulation_time_initial)), 's')

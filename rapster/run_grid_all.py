@@ -123,6 +123,17 @@ def make_tag(job):
             f"r{job['r']:.3f}_R{job['R']:.1f}_zf{job['z_form']:.3f}")
 
 
+def _to_text(x):
+    """Normalize subprocess output to str. On TimeoutExpired, stdout/stderr may
+    come back as bytes even with text=True, which caused 'can't concat str to
+    bytes'. Handle str, bytes, and None uniformly."""
+    if x is None:
+        return ""
+    if isinstance(x, bytes):
+        return x.decode("utf-8", errors="replace")
+    return x
+
+
 def is_complete(sim_outdir):
     """A run is complete iff its Rapster log.txt contains the DONE marker."""
     log_path = os.path.join(sim_outdir, "log.txt")
@@ -188,21 +199,21 @@ def run_sim(args):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
         code = result.returncode
-        stdout, stderr = result.stdout, result.stderr
+        stdout, stderr = _to_text(result.stdout), _to_text(result.stderr)
         status = "OK" if code == 0 else f"FAILED(code {code})"
     except subprocess.TimeoutExpired as e:
         code = -1
-        stdout = e.stdout or ""
-        stderr = (e.stderr or "") + f"\n--- TIMEOUT after {timeout_s}s ---\n"
+        stdout = _to_text(e.stdout)
+        stderr = _to_text(e.stderr) + f"\n--- TIMEOUT after {timeout_s}s ---\n"
         status = "TIMEOUT"
 
     # write the subprocess stdout/stderr (Rapster's own log.txt is separate)
     proc_log = os.path.join(sim_outdir, f"proc_{tag}.log")
     with open(proc_log, "w") as f:
-        f.write(stdout if isinstance(stdout, str) else "")
+        f.write(stdout)
         if stderr:
             f.write("\n--- STDERR ---\n")
-            f.write(stderr if isinstance(stderr, str) else "")
+            f.write(stderr)
 
     # Decide final status by Rapster's own completion marker, not just exit code.
     if status == "TIMEOUT":

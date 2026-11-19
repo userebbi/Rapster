@@ -395,7 +395,7 @@ def compute_cluster_properties(state, config):
         hBH = state['hBH']
         binaries, mBH, sBH, pairs, z_i = apply_cosmological_coupling(
             t, tBH_form, state['z'], state['z_i'], state['z_i_0'],
-            config['k_cosmo'], binaries, mBH, sBH, pairs
+            config['k_cosmo'], binaries, mBH, sBH, pairs, m_avg
         )
         state['z_i'] = z_i
         state['binaries'] = binaries
@@ -1210,6 +1210,10 @@ def update_cluster(state, config):
 
     # half-mass radius update:
     rh = rh + drh
+
+    if rh <= 0:
+        print('CLUSTER DISSOLVED')
+        return False
 
     # galactocentric radius update:
     R_gal = R_gal + dR_gal
